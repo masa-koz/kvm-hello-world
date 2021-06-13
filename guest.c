@@ -14,26 +14,23 @@ void
 	__attribute__((section(".start")))
 	_start(void)
 {
-#if 0
-	const char *p;
-	for (p = "Hello, world!\n"; *p; ++p)
-		outb(0xE9, *p);
-#else
-	outb(0xE9, 'H');
-	outb(0xE9, 'e');
-	outb(0xE9, 'l');
-	outb(0xE9, 'l');
-	outb(0xE9, 'o');
-	outb(0xE9, ',');
-	outb(0xE9, ' ');
-	outb(0xE9, 'W');
-	outb(0xE9, 'o');
-	outb(0xE9, 'r');
-	outb(0xE9, 'l');
-	outb(0xE9, 'd');
-	outb(0xE9, '!');
-	outb(0xE9, '\n');
-#endif
+	const char *p = "Hello, world!\n";
+	outb(0xE9, p[0]);
+	outb(0xE9, p[1]);
+	outb(0xE9, p[2]);
+	outb(0xE9, p[3]);
+	outb(0xE9, p[4]);
+	outb(0xE9, p[5]);
+	outb(0xE9, p[6]);
+	outb(0xE9, p[7]);
+	outb(0xE9, p[8]);
+	outb(0xE9, p[9]);
+	outb(0xE9, p[10]);
+	outb(0xE9, p[11]);
+	outb(0xE9, p[12]);
+	outb(0xE9, p[13]);
+	outb(0xE9, p[14]);
+
 	*(long *)0x400 = 42;
 
 	for (;;)
