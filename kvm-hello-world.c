@@ -64,7 +64,7 @@
 #define PDE64_PS (1U << 7)
 #define PDE64_G (1U << 8)
 
-int sev_enabled = 1;
+int sev_enabled = 0;
 
 struct vm
 {
@@ -74,6 +74,7 @@ struct vm
 	size_t mem_size;
 	size_t image_size;
 	int sev_sys_fd;
+	int sev_running;
 };
 
 void vm_init(struct vm *vm, size_t mem_size)
@@ -150,6 +151,7 @@ void vm_init(struct vm *vm, size_t mem_size)
 		exit(1);
 	}
 
+	memset(vm->mem, 0, vm->mem_size);
 	madvise(vm->mem, mem_size, MADV_MERGEABLE);
 
 	memreg.slot = 0;
@@ -264,12 +266,8 @@ int run_vm(struct vm *vm, struct vcpu *vcpu, size_t sz)
 	struct kvm_sev_launch_update_data update_data = {};
 	struct kvm_sev_launch_measure measurement = {};
 	char *data = NULL;
-	char *image = NULL;
-	int sev_running = 0;
 
-	dump_image(vm->mem, vm->image_size);
-
-	if (sev_enabled)
+	if (sev_enabled && vm->sev_running == 0)
 	{
 		memset(&update_data, 0, sizeof(update_data));
 		update_data.uaddr = (__u64)(unsigned long)vm->mem;
@@ -313,6 +311,73 @@ int run_vm(struct vm *vm, struct vcpu *vcpu, size_t sz)
 			exit(1);
 		}
 		free(data);
+
+		memset(&guest_status, 0, sizeof(guest_status));
+		memset(&sev_cmd, 0, sizeof(sev_cmd));
+		sev_cmd.id = KVM_SEV_GUEST_STATUS;
+		sev_cmd.sev_fd = vm->sev_sys_fd;
+		sev_cmd.data = (__u64)(unsigned long)&guest_status;
+		if (ioctl(vm->fd, KVM_MEMORY_ENCRYPT_OP, &sev_cmd) < 0)
+		{
+			perror("KVM_SEV_GUEST_STATUS");
+			exit(1);
+		}
+		fprintf(stderr, "handle: %d, policy: %d, state: %d\n",
+				guest_status.handle, guest_status.policy, guest_status.state);
+
+		memset(&sev_cmd, 0, sizeof(sev_cmd));
+		sev_cmd.id = KVM_SEV_LAUNCH_FINISH;
+		sev_cmd.sev_fd = vm->sev_sys_fd;
+		sev_cmd.data = (__u64)(unsigned long)0;
+		if (ioctl(vm->fd, KVM_MEMORY_ENCRYPT_OP, &sev_cmd) < 0)
+		{
+			perror("KVM_SEV_LAUNCH_FINISH");
+			exit(1);
+		}
+		memset(&guest_status, 0, sizeof(guest_status));
+		memset(&sev_cmd, 0, sizeof(sev_cmd));
+		sev_cmd.id = KVM_SEV_GUEST_STATUS;
+		sev_cmd.sev_fd = vm->sev_sys_fd;
+		sev_cmd.data = (__u64)(unsigned long)&guest_status;
+		if (ioctl(vm->fd, KVM_MEMORY_ENCRYPT_OP, &sev_cmd) < 0)
+		{
+			perror("KVM_SEV_GUEST_STATUS");
+			exit(1);
+		}
+		fprintf(stderr, "handle: %d, policy: %d, state: %d\n",
+				guest_status.handle, guest_status.policy, guest_status.state);
+
+		vm->sev_running = 1;
+	}
+
+	if (sev_enabled)
+	{
+		char *image = NULL;
+		fprintf(stderr, "Dump Encrypted image:\n");
+
+		dump_image(vm->mem, vm->image_size);
+
+		image = malloc(vm->image_size);
+		if (image != NULL)
+		{
+			struct kvm_sev_dbg sev_dbg;
+
+			memset(&sev_dbg, 0, sizeof(sev_dbg));
+			sev_dbg.src_uaddr = (__u64)(unsigned long)vm->mem;
+			sev_dbg.dst_uaddr = (__u64)(unsigned long)image;
+			sev_dbg.len = vm->image_size;
+			memset(&sev_cmd, 0, sizeof(sev_cmd));
+			sev_cmd.id = KVM_SEV_DBG_DECRYPT;
+			sev_cmd.sev_fd = vm->sev_sys_fd;
+			sev_cmd.data = (__u64)(unsigned long)&sev_dbg;
+			if (ioctl(vm->fd, KVM_MEMORY_ENCRYPT_OP, &sev_cmd) < 0)
+			{
+				perror("KVM_SEV_DBG_DECRYPT");
+				exit(1);
+			}
+			fprintf(stderr, "Dump decrypted image:\n");
+			dump_image(image, vm->image_size);
+		}
 	}
 
 	for (;;)
@@ -321,70 +386,6 @@ int run_vm(struct vm *vm, struct vcpu *vcpu, size_t sz)
 		{
 			perror("KVM_RUN");
 			exit(1);
-		}
-
-		if (sev_enabled && sev_running == 0)
-		{
-
-			memset(&guest_status, 0, sizeof(guest_status));
-			memset(&sev_cmd, 0, sizeof(sev_cmd));
-			sev_cmd.id = KVM_SEV_GUEST_STATUS;
-			sev_cmd.sev_fd = vm->sev_sys_fd;
-			sev_cmd.data = (__u64)(unsigned long)&guest_status;
-			if (ioctl(vm->fd, KVM_MEMORY_ENCRYPT_OP, &sev_cmd) < 0)
-			{
-				perror("KVM_SEV_GUEST_STATUS");
-				exit(1);
-			}
-			fprintf(stderr, "handle: %d, policy: %d, state: %d\n",
-					guest_status.handle, guest_status.policy, guest_status.state);
-
-			memset(&sev_cmd, 0, sizeof(sev_cmd));
-			sev_cmd.id = KVM_SEV_LAUNCH_FINISH;
-			sev_cmd.sev_fd = vm->sev_sys_fd;
-			sev_cmd.data = (__u64)(unsigned long)0;
-			if (ioctl(vm->fd, KVM_MEMORY_ENCRYPT_OP, &sev_cmd) < 0)
-			{
-				perror("KVM_SEV_LAUNCH_FINISH");
-				exit(1);
-			}
-			memset(&guest_status, 0, sizeof(guest_status));
-			memset(&sev_cmd, 0, sizeof(sev_cmd));
-			sev_cmd.id = KVM_SEV_GUEST_STATUS;
-			sev_cmd.sev_fd = vm->sev_sys_fd;
-			sev_cmd.data = (__u64)(unsigned long)&guest_status;
-			if (ioctl(vm->fd, KVM_MEMORY_ENCRYPT_OP, &sev_cmd) < 0)
-			{
-				perror("KVM_SEV_GUEST_STATUS");
-				exit(1);
-			}
-			fprintf(stderr, "handle: %d, policy: %d, state: %d\n",
-					guest_status.handle, guest_status.policy, guest_status.state);
-
-			sev_running = 1;
-
-			dump_image(vm->mem, vm->image_size);
-
-			image = malloc(vm->image_size);
-			if (image != NULL)
-			{
-				struct kvm_sev_dbg sev_dbg;
-
-				memset(&sev_dbg, 0, sizeof(sev_dbg));
-				sev_dbg.src_uaddr = (__u64)(unsigned long)vm->mem;
-				sev_dbg.dst_uaddr = (__u64)(unsigned long)image;
-				sev_dbg.len = vm->image_size;
-				memset(&sev_cmd, 0, sizeof(sev_cmd));
-				sev_cmd.id = KVM_SEV_DBG_DECRYPT;
-				sev_cmd.sev_fd = vm->sev_sys_fd;
-				sev_cmd.data = (__u64)(unsigned long)&sev_dbg;
-				if (ioctl(vm->fd, KVM_MEMORY_ENCRYPT_OP, &sev_cmd) < 0)
-				{
-					perror("KVM_SEV_DBG_DECRYPT");
-					exit(1);
-				}
-				dump_image(image, vm->image_size);
-			}
 		}
 
 		switch (vcpu->kvm_run->exit_reason)
@@ -399,6 +400,12 @@ int run_vm(struct vm *vm, struct vcpu *vcpu, size_t sz)
 				fwrite(p + vcpu->kvm_run->io.data_offset,
 					   vcpu->kvm_run->io.size, 1, stdout);
 				fflush(stdout);
+				continue;
+			}
+			if (vcpu->kvm_run->io.direction == KVM_EXIT_IO_IN && vcpu->kvm_run->io.port == 0xE9)
+			{
+				fprintf(stderr, "inb\n");
+				*(volatile uint8_t *)((uintptr_t)vcpu->kvm_run + vcpu->kvm_run->io.data_offset) = 0x00;
 				continue;
 			}
 
@@ -425,14 +432,14 @@ check:
 	}
 
 	memcpy(&memval, &vm->mem[0x400], sz);
-#if 0
-	if (memval != 42)
+	fprintf(stderr, "memory at 0x400 is %llx\n",
+			(unsigned long long)memval);
+	if (sev_enabled == 0 && memval != 42)
 	{
 		printf("Wrong result: memory at 0x400 is %lld\n",
 			   (unsigned long long)memval);
 		return 0;
 	}
-#endif
 
 	return 1;
 }
@@ -507,6 +514,7 @@ int run_protected_mode(struct vm *vm, struct vcpu *vcpu)
 {
 	struct kvm_sregs sregs;
 	struct kvm_regs regs;
+	uint32_t memval;
 
 	printf("Testing protected mode\n");
 
@@ -535,6 +543,8 @@ int run_protected_mode(struct vm *vm, struct vcpu *vcpu)
 		exit(1);
 	}
 
+	memval = 0xFFFFFFFF;
+	memcpy(&vm->mem[0x400], &memval, 4);
 	vm->image_size = guest32_end - guest32;
 	memcpy(vm->mem, guest32, vm->image_size);
 	return run_vm(vm, vcpu, 4);
@@ -559,6 +569,7 @@ int run_paged_32bit_mode(struct vm *vm, struct vcpu *vcpu)
 {
 	struct kvm_sregs sregs;
 	struct kvm_regs regs;
+	uint32_t memval;
 
 	printf("Testing 32-bit paging\n");
 
@@ -587,6 +598,9 @@ int run_paged_32bit_mode(struct vm *vm, struct vcpu *vcpu)
 		perror("KVM_SET_REGS");
 		exit(1);
 	}
+
+	memval = 0xFFFFFFFF;
+	memcpy(&vm->mem[0x400], &memval, 4);
 
 	vm->image_size = guest32_end - guest32;
 	memcpy(vm->mem, guest32, vm->image_size);
@@ -644,6 +658,7 @@ int run_long_mode(struct vm *vm, struct vcpu *vcpu)
 {
 	struct kvm_sregs sregs;
 	struct kvm_regs regs;
+	uint64_t memval;
 
 	printf("Testing 64-bit mode\n");
 
@@ -676,6 +691,8 @@ int run_long_mode(struct vm *vm, struct vcpu *vcpu)
 
 	vm->image_size = guest64_end - guest64;
 	memcpy(vm->mem, guest64, vm->image_size);
+	memval = 0xFFFFFFFFFFFF;
+	memcpy(&vm->mem[0x400], &memval, 8);
 	return run_vm(vm, vcpu, 8);
 }
 
@@ -692,10 +709,14 @@ int main(int argc, char **argv)
 	} mode = REAL_MODE;
 	int opt;
 
-	while ((opt = getopt(argc, argv, "rspl")) != -1)
+	while ((opt = getopt(argc, argv, "rsple")) != -1)
 	{
 		switch (opt)
 		{
+		case 'e':
+			sev_enabled = 1;
+			break;
+
 		case 'r':
 			mode = REAL_MODE;
 			break;
@@ -719,6 +740,8 @@ int main(int argc, char **argv)
 		}
 	}
 
+	fprintf(stderr, "SEV %s\n", sev_enabled ? "ENABLED" : "DISABLED");
+	memset(&vm, 0, sizeof(vm));
 	vm_init(&vm, 0x200000);
 	vcpu_init(&vm, &vcpu);
 
