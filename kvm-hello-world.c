@@ -183,6 +183,7 @@ void vm_init(struct vm *vm, size_t mem_size)
 		sev_cmd.data = (__u64)(unsigned long)NULL;
 		if (ioctl(vm->fd, KVM_MEMORY_ENCRYPT_OP, &sev_cmd) < 0)
 		{
+			fprintf(stderr, "error=%d\n", sev_cmd.error);
 			perror("KVM_SEV_INIT");
 			exit(1);
 		}
@@ -545,7 +546,7 @@ void vm_send(struct vm *vm)
 			perror("KVM_SEV_SEND_UPDATE_DATA");
 			exit(1);
 		}
-		fprintf(stderr, "hdr_len=%u, off=%lu, trans_len=%u\n", send_update_data.hdr_len, off, send_update_data.trans_len);
+		//fprintf(stderr, "hdr_len=%u, off=%lu, trans_len=%u\n", send_update_data.hdr_len, off, send_update_data.trans_len);
 		writesz = fwrite(&send_update_data.hdr_len, 1, 4, fp);
 		if (writesz != 4)
 		{
