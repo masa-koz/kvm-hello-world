@@ -257,6 +257,274 @@ void dump_image(char *image, size_t image_size)
 	fprintf(stderr, "\n");
 }
 
+void vm_send(struct vm *vm)
+{
+	struct kvm_sev_cmd sev_cmd = {};
+	struct kvm_sev_guest_status guest_status = {};
+	struct kvm_sev_send_start send_start = {};
+	struct kvm_sev_send_update_data send_update_data = {};
+	uint8_t remote_pdh_cert[2084];
+	uint8_t remote_plat_certs[2084 * 3];
+	uint8_t amd_certs[832 * 2];
+	FILE *fp;
+	size_t readsz, writesz;
+	uint8_t *session = NULL;
+	uint8_t *pkthdr = NULL;
+	uint8_t trans[4096];
+	size_t off;
+
+	if (!sev_enabled || vm->sev_running == 0)
+	{
+		return;
+	}
+
+	fp = fopen("/home/kozuka/sev-certs/april/pdh.cert", "r");
+	if (fp == NULL)
+	{
+		perror("pdh.cert");
+		exit(1);
+	}
+	readsz = fread(remote_pdh_cert, 1, 2084, fp);
+	if (readsz != 2084)
+	{
+		perror("fread");
+		exit(1);
+	}
+	fclose(fp);
+
+	fp = fopen("/home/kozuka/sev-certs/april/pek.cert", "r");
+	if (fp == NULL)
+	{
+		perror("pek.cert");
+		exit(1);
+	}
+	readsz = fread(remote_plat_certs, 1, 2084, fp);
+	if (readsz != 2084)
+	{
+		perror("fread");
+		exit(1);
+	}
+	fclose(fp);
+
+	fp = fopen("/home/kozuka/sev-certs/april/oca.cert", "r");
+	if (fp == NULL)
+	{
+		perror("oca.cert");
+		exit(1);
+	}
+	readsz = fread(&remote_plat_certs[2084], 1, 2084, fp);
+	if (readsz != 2084)
+	{
+		perror("fread");
+		exit(1);
+	}
+	fclose(fp);
+
+	fp = fopen("/home/kozuka/sev-certs/april/cek.cert", "r");
+	if (fp == NULL)
+	{
+		perror("cek.cert");
+		exit(1);
+	}
+	readsz = fread(&remote_plat_certs[2084 * 2], 1, 2084, fp);
+	if (readsz != 2084)
+	{
+		perror("fread");
+		exit(1);
+	}
+	fclose(fp);
+	fp = fopen("/home/kozuka/sev-certs/april/ask.cert", "r");
+	if (fp == NULL)
+	{
+		perror("ask.cert");
+		exit(1);
+	}
+	readsz = fread(amd_certs, 1, 832, fp);
+	if (readsz != 832)
+	{
+		perror("fread");
+		exit(1);
+	}
+	fclose(fp);
+
+	fp = fopen("/home/kozuka/sev-certs/april/ark.cert", "r");
+	if (fp == NULL)
+	{
+		perror("ark.cert");
+		exit(1);
+	}
+	readsz = fread(&amd_certs[832], 1, 832, fp);
+	if (readsz != 832)
+	{
+		perror("fread");
+		exit(1);
+	}
+	fclose(fp);
+
+	memset(&guest_status, 0, sizeof(guest_status));
+	memset(&sev_cmd, 0, sizeof(sev_cmd));
+	sev_cmd.id = KVM_SEV_GUEST_STATUS;
+	sev_cmd.sev_fd = vm->sev_sys_fd;
+	sev_cmd.data = (__u64)(unsigned long)&guest_status;
+	if (ioctl(vm->fd, KVM_MEMORY_ENCRYPT_OP, &sev_cmd) < 0)
+	{
+		perror("KVM_SEV_GUEST_STATUS");
+		exit(1);
+	}
+	fprintf(stderr, "handle: %d, policy: %d, state: %d\n",
+			guest_status.handle, guest_status.policy, guest_status.state);
+
+	fp = fopen("encryptedmem-for-april.dat", "wb");
+	if (fp == NULL)
+	{
+		perror("encryptedmem-for-april.dat");
+		exit(1);
+	}
+
+	memset(&send_start, 0, sizeof(send_start));
+	memset(&sev_cmd, 0, sizeof(sev_cmd));
+	sev_cmd.id = KVM_SEV_SEND_START;
+	sev_cmd.sev_fd = vm->sev_sys_fd;
+	sev_cmd.data = (__u64)(unsigned long)&send_start;
+	ioctl(vm->fd, KVM_MEMORY_ENCRYPT_OP, &sev_cmd);
+	if (send_start.session_len == 0)
+	{
+		perror("KVM_SEV_SEND_START#1");
+		exit(1);
+	}
+	fprintf(stderr, "session_len=%u\n", send_start.session_len);
+
+	session = malloc(send_start.session_len);
+	if (session == NULL)
+	{
+		perror("malloc");
+		exit(1);
+	}
+	send_start.session_uaddr = (__u64)(unsigned long)session;
+
+	send_start.pdh_cert_uaddr = (__u64)(unsigned long)remote_pdh_cert;
+	send_start.pdh_cert_len = 2084;
+	send_start.plat_certs_uaddr = (__u64)(unsigned long)remote_plat_certs;
+	send_start.plat_certs_len = 2084 * 3;
+	send_start.amd_certs_uaddr = (__u64)(unsigned long)amd_certs;
+	send_start.amd_certs_len = 832 * 2;
+	memset(&sev_cmd, 0, sizeof(sev_cmd));
+	sev_cmd.id = KVM_SEV_SEND_START;
+	sev_cmd.sev_fd = vm->sev_sys_fd;
+	sev_cmd.data = (__u64)(unsigned long)&send_start;
+	if (ioctl(vm->fd, KVM_MEMORY_ENCRYPT_OP, &sev_cmd) < 0)
+	{
+		fprintf(stderr, "error=%d\n", sev_cmd.error);
+		perror("KVM_SEV_SEND_START");
+		exit(1);
+	}
+	writesz = fwrite(&send_start.session_len, 1, 4, fp);
+	if (writesz != 4)
+	{
+		perror("fwrite");
+		exit(1);
+	}
+	writesz = fwrite(session, 1, send_start.session_len, fp);
+	if (writesz != send_start.session_len)
+	{
+		perror("fwrite");
+		exit(1);
+	}
+
+	if (session != NULL)
+	{
+		free(session);
+	}
+
+	memset(&guest_status, 0, sizeof(guest_status));
+	memset(&sev_cmd, 0, sizeof(sev_cmd));
+	sev_cmd.id = KVM_SEV_GUEST_STATUS;
+	sev_cmd.sev_fd = vm->sev_sys_fd;
+	sev_cmd.data = (__u64)(unsigned long)&guest_status;
+	if (ioctl(vm->fd, KVM_MEMORY_ENCRYPT_OP, &sev_cmd) < 0)
+	{
+		perror("KVM_SEV_GUEST_STATUS");
+		exit(1);
+	}
+	fprintf(stderr, "handle: %d, policy: %d, state: %d\n",
+			guest_status.handle, guest_status.policy, guest_status.state);
+
+	memset(&send_update_data, 0, sizeof(send_update_data));
+	memset(&sev_cmd, 0, sizeof(sev_cmd));
+	sev_cmd.id = KVM_SEV_SEND_UPDATE_DATA;
+	sev_cmd.sev_fd = vm->sev_sys_fd;
+	sev_cmd.data = (__u64)(unsigned long)&send_update_data;
+	ioctl(vm->fd, KVM_MEMORY_ENCRYPT_OP, &sev_cmd);
+	if (send_update_data.hdr_len == 0)
+	{
+		exit(1);
+	}
+	fprintf(stderr, "pkthdrlen: %u, mem_size: %lu\n", send_update_data.hdr_len, vm->mem_size);
+
+	pkthdr = malloc(send_update_data.hdr_len);
+	if (pkthdr == NULL)
+	{
+		perror("malloc");
+		exit(1);
+	}
+
+	for (off = 0; off < vm->mem_size; off += send_update_data.trans_len)
+	{
+		send_update_data.hdr_uaddr = (__u64)(unsigned long)pkthdr;
+		send_update_data.guest_uaddr = (__u64)(unsigned long)(vm->mem + off);
+		send_update_data.guest_len = 4096;
+		send_update_data.trans_uaddr = (__u64)(unsigned long)trans;
+		send_update_data.trans_len = 4096;
+		memset(&sev_cmd, 0, sizeof(sev_cmd));
+		sev_cmd.id = KVM_SEV_SEND_UPDATE_DATA;
+		sev_cmd.sev_fd = vm->sev_sys_fd;
+		sev_cmd.data = (__u64)(unsigned long)&send_update_data;
+		if (ioctl(vm->fd, KVM_MEMORY_ENCRYPT_OP, &sev_cmd) < 0)
+		{
+			fprintf(stderr, "error=%d\n", sev_cmd.error);
+			perror("KVM_SEV_SEND_UPDATE_DATA");
+			exit(1);
+		}
+		fprintf(stderr, "hdr_len=%u, off=%lu, trans_len=%u\n", send_update_data.hdr_len, off, send_update_data.trans_len);
+		writesz = fwrite(&send_update_data.hdr_len, 1, 4, fp);
+		if (writesz != 4)
+		{
+			perror("fwrite");
+			exit(1);
+		}
+		writesz = fwrite(pkthdr, 1, send_update_data.hdr_len, fp);
+		if (writesz != send_update_data.hdr_len)
+		{
+			perror("fwrite");
+			exit(1);
+		}
+		writesz = fwrite(&send_update_data.trans_len, 1, 4, fp);
+		if (writesz != 4)
+		{
+			perror("fwrite");
+			exit(1);
+		}
+		writesz = fwrite(trans, 1, send_update_data.trans_len, fp);
+		if (writesz != send_update_data.trans_len)
+		{
+			perror("fwrite");
+			exit(1);
+		}
+	}
+
+	free(pkthdr);
+
+	memset(&sev_cmd, 0, sizeof(sev_cmd));
+	sev_cmd.id = KVM_SEV_SEND_FINISH;
+	sev_cmd.sev_fd = vm->sev_sys_fd;
+	sev_cmd.data = (__u64)(unsigned long)NULL;
+	if (ioctl(vm->fd, KVM_MEMORY_ENCRYPT_OP, &sev_cmd) < 0)
+	{
+		perror("KVM_SEV_SEND_FINISH");
+		exit(1);
+	}
+}
+
 int run_vm(struct vm *vm, struct vcpu *vcpu, size_t sz)
 {
 	struct kvm_regs regs;
@@ -378,6 +646,7 @@ int run_vm(struct vm *vm, struct vcpu *vcpu, size_t sz)
 			fprintf(stderr, "Dump decrypted image:\n");
 			dump_image(image, vm->image_size);
 		}
+		vm_send(vm);
 	}
 
 	for (;;)
