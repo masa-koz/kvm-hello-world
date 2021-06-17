@@ -64,7 +64,12 @@
 #define PDE64_PS (1U << 7)
 #define PDE64_G (1U << 8)
 
-int sev_enabled = 0;
+enum
+{
+	sev_disabled = 0,
+	sev_send,
+	sev_recv,
+} sev_mode = sev_disabled;
 
 struct vm
 {
@@ -75,7 +80,11 @@ struct vm
 	size_t image_size;
 	int sev_sys_fd;
 	int sev_running;
+	FILE *fp;
 };
+
+void vm_recv_start(struct vm *vm);
+void vm_recv(struct vm *vm);
 
 void vm_init(struct vm *vm, size_t mem_size)
 {
@@ -88,7 +97,7 @@ void vm_init(struct vm *vm, size_t mem_size)
 	struct kvm_sev_launch_start start = {};
 	struct kvm_sev_guest_status guest_status = {};
 
-	if (sev_enabled)
+	if (sev_mode != sev_disabled)
 	{
 		vm->sev_sys_fd = open("/dev/sev", O_RDWR);
 		if (vm->sev_sys_fd < 0)
@@ -165,7 +174,7 @@ void vm_init(struct vm *vm, size_t mem_size)
 		exit(1);
 	}
 
-	if (sev_enabled)
+	if (sev_mode != sev_disabled)
 	{
 		memset(&sev_cmd, 0, sizeof(sev_cmd));
 		sev_cmd.id = KVM_SEV_INIT;
@@ -176,7 +185,10 @@ void vm_init(struct vm *vm, size_t mem_size)
 			perror("KVM_SEV_INIT");
 			exit(1);
 		}
+	}
 
+	if (sev_mode == sev_send)
+	{
 		memset(&start, 0, sizeof(start));
 		start.policy = 0x00;
 		memset(&sev_cmd, 0, sizeof(sev_cmd));
@@ -201,6 +213,11 @@ void vm_init(struct vm *vm, size_t mem_size)
 		}
 		fprintf(stderr, "handle: %d, policy: %d, state: %d\n",
 				guest_status.handle, guest_status.policy, guest_status.state);
+	}
+
+	if (sev_mode == sev_recv) {
+		vm_recv_start(vm);
+		vm_recv(vm);
 	}
 }
 
@@ -263,6 +280,8 @@ void vm_send(struct vm *vm)
 	struct kvm_sev_guest_status guest_status = {};
 	struct kvm_sev_send_start send_start = {};
 	struct kvm_sev_send_update_data send_update_data = {};
+	uint32_t local_pdh_cert_len = 2084;
+	uint8_t local_pdh_cert[2084];
 	uint8_t remote_pdh_cert[2084];
 	uint8_t remote_plat_certs[2084 * 3];
 	uint8_t amd_certs[832 * 2];
@@ -273,12 +292,26 @@ void vm_send(struct vm *vm)
 	uint8_t trans[4096];
 	size_t off;
 
-	if (!sev_enabled || vm->sev_running == 0)
+	if (sev_mode != sev_send || vm->sev_running == 0)
 	{
 		return;
 	}
 
-	fp = fopen("/home/kozuka/sev-certs/april/pdh.cert", "r");
+	fp = fopen("/home/kozuka/sev-certs/uzuki/pdh.cert", "r");
+	if (fp == NULL)
+	{
+		perror("pdh.cert");
+		exit(1);
+	}
+	readsz = fread(local_pdh_cert, 1, 2084, fp);
+	if (readsz != 2084)
+	{
+		perror("fread");
+		exit(1);
+	}
+	fclose(fp);
+
+	fp = fopen("/home/kozuka/sev-certs/uzuki/pdh.cert", "r");
 	if (fp == NULL)
 	{
 		perror("pdh.cert");
@@ -292,7 +325,7 @@ void vm_send(struct vm *vm)
 	}
 	fclose(fp);
 
-	fp = fopen("/home/kozuka/sev-certs/april/pek.cert", "r");
+	fp = fopen("/home/kozuka/sev-certs/uzuki/pek.cert", "r");
 	if (fp == NULL)
 	{
 		perror("pek.cert");
@@ -306,7 +339,7 @@ void vm_send(struct vm *vm)
 	}
 	fclose(fp);
 
-	fp = fopen("/home/kozuka/sev-certs/april/oca.cert", "r");
+	fp = fopen("/home/kozuka/sev-certs/uzuki/oca.cert", "r");
 	if (fp == NULL)
 	{
 		perror("oca.cert");
@@ -320,7 +353,7 @@ void vm_send(struct vm *vm)
 	}
 	fclose(fp);
 
-	fp = fopen("/home/kozuka/sev-certs/april/cek.cert", "r");
+	fp = fopen("/home/kozuka/sev-certs/uzuki/cek.cert", "r");
 	if (fp == NULL)
 	{
 		perror("cek.cert");
@@ -333,7 +366,7 @@ void vm_send(struct vm *vm)
 		exit(1);
 	}
 	fclose(fp);
-	fp = fopen("/home/kozuka/sev-certs/april/ask.cert", "r");
+	fp = fopen("/home/kozuka/sev-certs/uzuki/ask.cert", "r");
 	if (fp == NULL)
 	{
 		perror("ask.cert");
@@ -347,7 +380,7 @@ void vm_send(struct vm *vm)
 	}
 	fclose(fp);
 
-	fp = fopen("/home/kozuka/sev-certs/april/ark.cert", "r");
+	fp = fopen("/home/kozuka/sev-certs/uzuki/ark.cert", "r");
 	if (fp == NULL)
 	{
 		perror("ark.cert");
@@ -374,10 +407,10 @@ void vm_send(struct vm *vm)
 	fprintf(stderr, "handle: %d, policy: %d, state: %d\n",
 			guest_status.handle, guest_status.policy, guest_status.state);
 
-	fp = fopen("encryptedmem-for-april.dat", "wb");
+	fp = fopen("encryptedmem-for-uzuki.dat", "wb");
 	if (fp == NULL)
 	{
-		perror("encryptedmem-for-april.dat");
+		perror("encryptedmem-for-uzuki.dat");
 		exit(1);
 	}
 
@@ -416,6 +449,19 @@ void vm_send(struct vm *vm)
 	{
 		fprintf(stderr, "error=%d\n", sev_cmd.error);
 		perror("KVM_SEV_SEND_START");
+		exit(1);
+	}
+
+	writesz = fwrite(&local_pdh_cert_len, 1, 4, fp);
+	if (writesz != 4)
+	{
+		perror("fwrite");
+		exit(1);
+	}
+	writesz = fwrite(local_pdh_cert, 1, local_pdh_cert_len, fp);
+	if (writesz != local_pdh_cert_len)
+	{
+		perror("fwrite");
 		exit(1);
 	}
 	writesz = fwrite(&send_start.session_len, 1, 4, fp);
@@ -513,6 +559,7 @@ void vm_send(struct vm *vm)
 	}
 
 	free(pkthdr);
+	fclose(fp);
 
 	memset(&sev_cmd, 0, sizeof(sev_cmd));
 	sev_cmd.id = KVM_SEV_SEND_FINISH;
@@ -525,6 +572,209 @@ void vm_send(struct vm *vm)
 	}
 }
 
+void vm_recv_start(struct vm *vm)
+{
+	size_t readsz;
+	uint32_t remote_pdh_cert_len;
+	uint8_t *remote_pdf_cert;
+	uint32_t session_len;
+	uint8_t *session;
+	struct kvm_sev_cmd sev_cmd = {};
+	struct kvm_sev_guest_status guest_status = {};
+	struct kvm_sev_receive_start receive_start = {};
+
+	vm->fp = fopen("encryptedmem-for-uzuki.dat", "rb");
+	if (vm->fp == NULL)
+	{
+		perror("encryptedmem-for-uzuki.dat");
+		exit(1);
+	}
+
+	readsz = fread(&remote_pdh_cert_len, 1, 4, vm->fp);
+	if (readsz != 4)
+	{
+		perror("fread");
+		exit(1);
+	}
+	fprintf(stderr, "remote_pdh_cert_len=%u\n", remote_pdh_cert_len);
+
+	remote_pdf_cert = malloc(remote_pdh_cert_len);
+	if (remote_pdf_cert == NULL)
+	{
+		perror("malloc");
+		exit(1);
+	}
+	readsz = fread(remote_pdf_cert, 1, remote_pdh_cert_len, vm->fp);
+	if (readsz != remote_pdh_cert_len)
+	{
+		perror("fread");
+		exit(1);
+	}
+
+	readsz = fread(&session_len, 1, 4, vm->fp);
+	if (readsz != 4)
+	{
+		perror("fread");
+		exit(1);
+	}
+	fprintf(stderr, "session_len=%u\n", session_len);
+
+	session = malloc(session_len);
+	if (session == NULL)
+	{
+		perror("malloc");
+		exit(1);
+	}
+	readsz = fread(session, 1, session_len, vm->fp);
+	if (readsz != session_len)
+	{
+		perror("fread");
+		exit(1);
+	}
+
+	memset(&receive_start, 0, sizeof(receive_start));
+	receive_start.policy = 0;
+	receive_start.pdh_uaddr = (__u64)(unsigned long)remote_pdf_cert;
+	receive_start.pdh_len = remote_pdh_cert_len;
+	receive_start.session_uaddr = (__u64)(unsigned long)session;
+	receive_start.session_len = session_len;
+
+	memset(&sev_cmd, 0, sizeof(sev_cmd));
+	sev_cmd.id = KVM_SEV_RECEIVE_START;
+	sev_cmd.sev_fd = vm->sev_sys_fd;
+	sev_cmd.data = (__u64)(unsigned long)&receive_start;
+	if (ioctl(vm->fd, KVM_MEMORY_ENCRYPT_OP, &sev_cmd) < 0)
+	{
+		fprintf(stderr, "error=%d\n", sev_cmd.error);
+		perror("KVM_SEV_RECEIVE_START");
+		exit(1);
+	}
+
+	memset(&guest_status, 0, sizeof(guest_status));
+	memset(&sev_cmd, 0, sizeof(sev_cmd));
+	sev_cmd.id = KVM_SEV_GUEST_STATUS;
+	sev_cmd.sev_fd = vm->sev_sys_fd;
+	sev_cmd.data = (__u64)(unsigned long)&guest_status;
+	if (ioctl(vm->fd, KVM_MEMORY_ENCRYPT_OP, &sev_cmd) < 0)
+	{
+		perror("KVM_SEV_GUEST_STATUS");
+		exit(1);
+	}
+	fprintf(stderr, "handle: %d, policy: %d, state: %d\n",
+			guest_status.handle, guest_status.policy, guest_status.state);
+}
+
+void vm_recv(struct vm *vm)
+{
+	size_t readsz;
+	uint32_t pkthdr_len;
+	uint8_t *pkthdr = NULL;
+	uint32_t trans_len;
+	uint8_t *trans = NULL;
+	size_t off;
+	struct kvm_sev_cmd sev_cmd = {};
+	struct kvm_sev_guest_status guest_status = {};
+	struct kvm_sev_receive_update_data receive_update_data = {};
+
+	fprintf(stderr, "mem_size=%lu\n", vm->mem_size);
+	off = 0;
+	while (off < vm->mem_size)
+	{
+		readsz = fread(&pkthdr_len, 1, 4, vm->fp);
+		if (readsz == 0)
+		{
+			break;
+		}
+		if (readsz != 4)
+		{
+			perror("fread");
+			exit(1);
+		}
+		//fprintf(stderr, "pkthdr_len=%u\n", pkthdr_len);
+
+		pkthdr = realloc(pkthdr, pkthdr_len);
+		if (pkthdr == NULL)
+		{
+			perror("realloc");
+			exit(1);
+		}
+		readsz = fread(pkthdr, 1, pkthdr_len, vm->fp);
+		if (readsz != pkthdr_len)
+		{
+			perror("fread");
+			exit(1);
+		}
+
+		readsz = fread(&trans_len, 1, 4, vm->fp);
+		if (readsz != 4)
+		{
+			perror("fread");
+			exit(1);
+		}
+		//fprintf(stderr, "off=%lu, trans_len=%u\n", off, trans_len);
+
+		trans = realloc(trans, trans_len);
+		if (trans == NULL)
+		{
+			perror("realloc");
+			exit(1);
+		}
+		readsz = fread(trans, 1, trans_len, vm->fp);
+		if (readsz != trans_len)
+		{
+			perror("fread");
+			exit(1);
+		}
+
+		memset(&receive_update_data, 0, sizeof(receive_update_data));
+		receive_update_data.hdr_uaddr = (__u64)(unsigned long)pkthdr;
+		receive_update_data.hdr_len = pkthdr_len;
+		receive_update_data.guest_uaddr = (__u64)(unsigned long)(vm->mem + off);
+		receive_update_data.guest_len = trans_len;
+		receive_update_data.trans_uaddr = (__u64)(unsigned long)trans;
+		receive_update_data.trans_len = trans_len;
+
+		memset(&sev_cmd, 0, sizeof(sev_cmd));
+		sev_cmd.id = KVM_SEV_RECEIVE_UPDATE_DATA;
+		sev_cmd.sev_fd = vm->sev_sys_fd;
+		sev_cmd.data = (__u64)(unsigned long)&receive_update_data;
+		if (ioctl(vm->fd, KVM_MEMORY_ENCRYPT_OP, &sev_cmd) < 0)
+		{
+			fprintf(stderr, "error=%d\n", sev_cmd.error);
+			perror("KVM_SEV_RECEIVE_UPDATE_DATA");
+			exit(1);
+		}
+		off += trans_len;
+	}
+	free(pkthdr);
+	free(trans);
+	fclose(vm->fp);
+
+	memset(&sev_cmd, 0, sizeof(sev_cmd));
+	sev_cmd.id = KVM_SEV_RECEIVE_FINISH;
+	sev_cmd.sev_fd = vm->sev_sys_fd;
+	sev_cmd.data = (__u64)(unsigned long)NULL;
+	if (ioctl(vm->fd, KVM_MEMORY_ENCRYPT_OP, &sev_cmd) < 0)
+	{
+		perror("KVM_SEV_RECEIVE_FINISH");
+		exit(1);
+	}
+
+	memset(&guest_status, 0, sizeof(guest_status));
+	memset(&sev_cmd, 0, sizeof(sev_cmd));
+	sev_cmd.id = KVM_SEV_GUEST_STATUS;
+	sev_cmd.sev_fd = vm->sev_sys_fd;
+	sev_cmd.data = (__u64)(unsigned long)&guest_status;
+	if (ioctl(vm->fd, KVM_MEMORY_ENCRYPT_OP, &sev_cmd) < 0)
+	{
+		perror("KVM_SEV_GUEST_STATUS");
+		exit(1);
+	}
+	fprintf(stderr, "handle: %d, policy: %d, state: %d\n",
+			guest_status.handle, guest_status.policy, guest_status.state);
+	vm->image_size = 256;
+}
+
 int run_vm(struct vm *vm, struct vcpu *vcpu, size_t sz)
 {
 	struct kvm_regs regs;
@@ -535,7 +785,7 @@ int run_vm(struct vm *vm, struct vcpu *vcpu, size_t sz)
 	struct kvm_sev_launch_measure measurement = {};
 	char *data = NULL;
 
-	if (sev_enabled && vm->sev_running == 0)
+	if (sev_mode == sev_send)
 	{
 		memset(&update_data, 0, sizeof(update_data));
 		update_data.uaddr = (__u64)(unsigned long)vm->mem;
@@ -615,10 +865,17 @@ int run_vm(struct vm *vm, struct vcpu *vcpu, size_t sz)
 		fprintf(stderr, "handle: %d, policy: %d, state: %d\n",
 				guest_status.handle, guest_status.policy, guest_status.state);
 
+		vm_send(vm);
 		vm->sev_running = 1;
 	}
 
-	if (sev_enabled)
+	if (sev_mode == sev_recv)
+	{
+		//vm_recv(vm);
+		vm->sev_running = 1;
+	}
+
+	if (sev_mode != sev_disabled)
 	{
 		char *image = NULL;
 		fprintf(stderr, "Dump Encrypted image:\n");
@@ -646,7 +903,6 @@ int run_vm(struct vm *vm, struct vcpu *vcpu, size_t sz)
 			fprintf(stderr, "Dump decrypted image:\n");
 			dump_image(image, vm->image_size);
 		}
-		vm_send(vm);
 	}
 
 	for (;;)
@@ -703,7 +959,7 @@ check:
 	memcpy(&memval, &vm->mem[0x400], sz);
 	fprintf(stderr, "memory at 0x400 is %llx\n",
 			(unsigned long long)memval);
-	if (sev_enabled == 0 && memval != 42)
+	if (sev_mode == sev_disabled && memval != 42)
 	{
 		printf("Wrong result: memory at 0x400 is %lld\n",
 			   (unsigned long long)memval);
@@ -814,8 +1070,11 @@ int run_protected_mode(struct vm *vm, struct vcpu *vcpu)
 
 	memval = 0xFFFFFFFF;
 	memcpy(&vm->mem[0x400], &memval, 4);
-	vm->image_size = guest32_end - guest32;
-	memcpy(vm->mem, guest32, vm->image_size);
+	if (sev_mode != sev_recv)
+	{
+		vm->image_size = guest32_end - guest32;
+		memcpy(vm->mem, guest32, vm->image_size);
+	}
 	return run_vm(vm, vcpu, 4);
 }
 
@@ -870,9 +1129,11 @@ int run_paged_32bit_mode(struct vm *vm, struct vcpu *vcpu)
 
 	memval = 0xFFFFFFFF;
 	memcpy(&vm->mem[0x400], &memval, 4);
-
-	vm->image_size = guest32_end - guest32;
-	memcpy(vm->mem, guest32, vm->image_size);
+	if (sev_mode != sev_recv)
+	{
+		vm->image_size = guest32_end - guest32;
+		memcpy(vm->mem, guest32, vm->image_size);
+	}
 	return run_vm(vm, vcpu, 4);
 }
 
@@ -978,12 +1239,16 @@ int main(int argc, char **argv)
 	} mode = REAL_MODE;
 	int opt;
 
-	while ((opt = getopt(argc, argv, "rsple")) != -1)
+	while ((opt = getopt(argc, argv, "rsplED")) != -1)
 	{
 		switch (opt)
 		{
-		case 'e':
-			sev_enabled = 1;
+		case 'E':
+			sev_mode = sev_send;
+			break;
+
+		case 'D':
+			sev_mode = sev_recv;
 			break;
 
 		case 'r':
@@ -1009,7 +1274,7 @@ int main(int argc, char **argv)
 		}
 	}
 
-	fprintf(stderr, "SEV %s\n", sev_enabled ? "ENABLED" : "DISABLED");
+	fprintf(stderr, "SEV mode: %d\n", sev_mode);
 	memset(&vm, 0, sizeof(vm));
 	vm_init(&vm, 0x200000);
 	vcpu_init(&vm, &vcpu);
