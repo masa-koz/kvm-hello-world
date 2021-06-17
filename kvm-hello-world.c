@@ -67,7 +67,8 @@
 enum
 {
 	sev_disabled = 0,
-	sev_send,
+	sev_send_to_local,
+	sev_send_to_remote,
 	sev_recv,
 } sev_mode = sev_disabled;
 
@@ -187,7 +188,7 @@ void vm_init(struct vm *vm, size_t mem_size)
 		}
 	}
 
-	if (sev_mode == sev_send)
+	if (sev_mode == sev_send_to_local || sev_mode == sev_send_to_remote)
 	{
 		memset(&start, 0, sizeof(start));
 		start.policy = 0x00;
@@ -215,7 +216,8 @@ void vm_init(struct vm *vm, size_t mem_size)
 				guest_status.handle, guest_status.policy, guest_status.state);
 	}
 
-	if (sev_mode == sev_recv) {
+	if (sev_mode == sev_recv)
+	{
 		vm_recv_start(vm);
 		vm_recv(vm);
 	}
@@ -274,6 +276,18 @@ void dump_image(char *image, size_t image_size)
 	fprintf(stderr, "\n");
 }
 
+#define LOCAL_PDH_CERT "/home/kozuka/sev-certs/local/pdh.cert"
+#define LOCAL_PEK_CERT "/home/kozuka/sev-certs/local/pek.cert"
+#define LOCAL_OCA_CERT "/home/kozuka/sev-certs/local/oca.cert"
+#define LOCAL_CEK_CERT "/home/kozuka/sev-certs/local/cek.cert"
+#define REMOTE_PDH_CERT "/home/kozuka/sev-certs/remote/pdh.cert"
+#define REMOTE_PEK_CERT "/home/kozuka/sev-certs/remote/pek.cert"
+#define REMOTE_OCA_CERT "/home/kozuka/sev-certs/remote/oca.cert"
+#define REMOTE_CEK_CERT "/home/kozuka/sev-certs/remote/cek.cert"
+#define ASK_CERT		"/home/kozuka/sev-certs/local/ask.cert"
+#define ARK_CERT		"/home/kozuka/sev-certs/local/ark.cert"
+#define ENCRYPTED_MEM	"encrypted_mem.dat"
+
 void vm_send(struct vm *vm)
 {
 	struct kvm_sev_cmd sev_cmd = {};
@@ -292,12 +306,12 @@ void vm_send(struct vm *vm)
 	uint8_t trans[4096];
 	size_t off;
 
-	if (sev_mode != sev_send || vm->sev_running == 0)
+	if ((sev_mode != sev_send_to_local && sev_mode != sev_send_to_remote) || vm->sev_running == 0)
 	{
 		return;
 	}
 
-	fp = fopen("/home/kozuka/sev-certs/uzuki/pdh.cert", "r");
+	fp = fopen(LOCAL_PDH_CERT, "r");
 	if (fp == NULL)
 	{
 		perror("pdh.cert");
@@ -311,7 +325,7 @@ void vm_send(struct vm *vm)
 	}
 	fclose(fp);
 
-	fp = fopen("/home/kozuka/sev-certs/uzuki/pdh.cert", "r");
+	fp = fopen(sev_mode == sev_send_to_local ? LOCAL_PDH_CERT : REMOTE_PDH_CERT, "r");
 	if (fp == NULL)
 	{
 		perror("pdh.cert");
@@ -325,7 +339,7 @@ void vm_send(struct vm *vm)
 	}
 	fclose(fp);
 
-	fp = fopen("/home/kozuka/sev-certs/uzuki/pek.cert", "r");
+	fp = fopen(sev_mode == sev_send_to_local ? LOCAL_PEK_CERT : REMOTE_PEK_CERT, "r");
 	if (fp == NULL)
 	{
 		perror("pek.cert");
@@ -339,7 +353,7 @@ void vm_send(struct vm *vm)
 	}
 	fclose(fp);
 
-	fp = fopen("/home/kozuka/sev-certs/uzuki/oca.cert", "r");
+	fp = fopen(sev_mode == sev_send_to_local ? LOCAL_OCA_CERT : REMOTE_OCA_CERT, "r");
 	if (fp == NULL)
 	{
 		perror("oca.cert");
@@ -353,7 +367,7 @@ void vm_send(struct vm *vm)
 	}
 	fclose(fp);
 
-	fp = fopen("/home/kozuka/sev-certs/uzuki/cek.cert", "r");
+	fp = fopen(sev_mode == sev_send_to_local ? LOCAL_CEK_CERT : REMOTE_CEK_CERT, "r");
 	if (fp == NULL)
 	{
 		perror("cek.cert");
@@ -366,7 +380,7 @@ void vm_send(struct vm *vm)
 		exit(1);
 	}
 	fclose(fp);
-	fp = fopen("/home/kozuka/sev-certs/uzuki/ask.cert", "r");
+	fp = fopen(ASK_CERT, "r");
 	if (fp == NULL)
 	{
 		perror("ask.cert");
@@ -380,7 +394,7 @@ void vm_send(struct vm *vm)
 	}
 	fclose(fp);
 
-	fp = fopen("/home/kozuka/sev-certs/uzuki/ark.cert", "r");
+	fp = fopen(ARK_CERT, "r");
 	if (fp == NULL)
 	{
 		perror("ark.cert");
@@ -407,7 +421,7 @@ void vm_send(struct vm *vm)
 	fprintf(stderr, "handle: %d, policy: %d, state: %d\n",
 			guest_status.handle, guest_status.policy, guest_status.state);
 
-	fp = fopen("encryptedmem-for-uzuki.dat", "wb");
+	fp = fopen(ENCRYPTED_MEM, "wb");
 	if (fp == NULL)
 	{
 		perror("encryptedmem-for-uzuki.dat");
@@ -583,7 +597,7 @@ void vm_recv_start(struct vm *vm)
 	struct kvm_sev_guest_status guest_status = {};
 	struct kvm_sev_receive_start receive_start = {};
 
-	vm->fp = fopen("encryptedmem-for-uzuki.dat", "rb");
+	vm->fp = fopen(ENCRYPTED_MEM, "rb");
 	if (vm->fp == NULL)
 	{
 		perror("encryptedmem-for-uzuki.dat");
@@ -785,7 +799,7 @@ int run_vm(struct vm *vm, struct vcpu *vcpu, size_t sz)
 	struct kvm_sev_launch_measure measurement = {};
 	char *data = NULL;
 
-	if (sev_mode == sev_send)
+	if (sev_mode == sev_send_to_local || sev_mode == sev_send_to_remote)
 	{
 		memset(&update_data, 0, sizeof(update_data));
 		update_data.uaddr = (__u64)(unsigned long)vm->mem;
@@ -865,13 +879,12 @@ int run_vm(struct vm *vm, struct vcpu *vcpu, size_t sz)
 		fprintf(stderr, "handle: %d, policy: %d, state: %d\n",
 				guest_status.handle, guest_status.policy, guest_status.state);
 
-		vm_send(vm);
 		vm->sev_running = 1;
+		vm_send(vm);
 	}
 
 	if (sev_mode == sev_recv)
 	{
-		//vm_recv(vm);
 		vm->sev_running = 1;
 	}
 
@@ -1239,12 +1252,16 @@ int main(int argc, char **argv)
 	} mode = REAL_MODE;
 	int opt;
 
-	while ((opt = getopt(argc, argv, "rsplED")) != -1)
+	while ((opt = getopt(argc, argv, "rspleED")) != -1)
 	{
 		switch (opt)
 		{
+		case 'e':
+			sev_mode = sev_send_to_local;
+			break;
+
 		case 'E':
-			sev_mode = sev_send;
+			sev_mode = sev_send_to_remote;
 			break;
 
 		case 'D':
