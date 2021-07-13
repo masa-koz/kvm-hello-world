@@ -90,37 +90,39 @@ void vm_recv_start(struct vm *vm);
 void vm_recv(struct vm *vm);
 
 void host_cpuid(uint32_t function, uint32_t count,
-                uint32_t *eax, uint32_t *ebx, uint32_t *ecx, uint32_t *edx)
+				uint32_t *eax, uint32_t *ebx, uint32_t *ecx, uint32_t *edx)
 {
-    uint32_t vec[4];
+	uint32_t vec[4];
 
 #ifdef __x86_64__
-    asm volatile("cpuid"
-                 : "=a"(vec[0]), "=b"(vec[1]),
-                   "=c"(vec[2]), "=d"(vec[3])
-                 : "0"(function), "c"(count) : "cc");
+	asm volatile("cpuid"
+				 : "=a"(vec[0]), "=b"(vec[1]),
+				   "=c"(vec[2]), "=d"(vec[3])
+				 : "0"(function), "c"(count)
+				 : "cc");
 #elif defined(__i386__)
-    asm volatile("pusha \n\t"
-                 "cpuid \n\t"
-                 "mov %%eax, 0(%2) \n\t"
-                 "mov %%ebx, 4(%2) \n\t"
-                 "mov %%ecx, 8(%2) \n\t"
-                 "mov %%edx, 12(%2) \n\t"
-                 "popa"
-                 : : "a"(function), "c"(count), "S"(vec)
-                 : "memory", "cc");
+	asm volatile("pusha \n\t"
+				 "cpuid \n\t"
+				 "mov %%eax, 0(%2) \n\t"
+				 "mov %%ebx, 4(%2) \n\t"
+				 "mov %%ecx, 8(%2) \n\t"
+				 "mov %%edx, 12(%2) \n\t"
+				 "popa"
+				 :
+				 : "a"(function), "c"(count), "S"(vec)
+				 : "memory", "cc");
 #else
-    abort();
+	abort();
 #endif
 
-    if (eax)
-        *eax = vec[0];
-    if (ebx)
-        *ebx = vec[1];
-    if (ecx)
-        *ecx = vec[2];
-    if (edx)
-        *edx = vec[3];
+	if (eax)
+		*eax = vec[0];
+	if (ebx)
+		*ebx = vec[1];
+	if (ecx)
+		*ecx = vec[2];
+	if (edx)
+		*edx = vec[3];
 }
 
 void vm_init(struct vm *vm, size_t mem_size)
@@ -326,9 +328,9 @@ void dump_image(char *image, size_t image_size)
 #define REMOTE_PEK_CERT "/home/kozuka/sev-certs/remote/pek.cert"
 #define REMOTE_OCA_CERT "/home/kozuka/sev-certs/remote/oca.cert"
 #define REMOTE_CEK_CERT "/home/kozuka/sev-certs/remote/cek.cert"
-#define ASK_CERT		"/home/kozuka/sev-certs/local/ask.cert"
-#define ARK_CERT		"/home/kozuka/sev-certs/local/ark.cert"
-#define ENCRYPTED_MEM	"encrypted_mem.dat"
+#define ASK_CERT "/home/kozuka/sev-certs/local/ask.cert"
+#define ARK_CERT "/home/kozuka/sev-certs/local/ark.cert"
+#define ENCRYPTED_MEM "encrypted_mem.dat"
 
 void vm_send(struct vm *vm)
 {
@@ -1136,11 +1138,14 @@ int run_protected_mode(struct vm *vm, struct vcpu *vcpu)
 static void setup_paged_32bit_mode(struct vm *vm, struct kvm_sregs *sregs)
 {
 	uint32_t pd_addr = 0x2000;
-	uint32_t *pd = (void *)(vm->mem + pd_addr);
+	if (sev_mode != sev_recv)
+	{
+		uint32_t *pd = (void *)(vm->mem + pd_addr);
 
-	/* A single 4MB page to cover the memory region */
-	pd[0] = PDE32_PRESENT | PDE32_RW | PDE32_USER | PDE32_PS;
-	/* Other PDEs are left zeroed, meaning not present. */
+		/* A single 4MB page to cover the memory region */
+		pd[0] = PDE32_PRESENT | PDE32_RW | PDE32_USER | PDE32_PS;
+		/* Other PDEs are left zeroed, meaning not present. */
+	}
 
 	sregs->cr3 = pd_addr;
 	sregs->cr4 = CR4_PSE;
@@ -1219,19 +1224,31 @@ static void setup_64bit_code_segment(struct kvm_sregs *sregs)
 static void setup_long_mode(struct vm *vm, struct kvm_sregs *sregs)
 {
 	uint64_t pml4_addr = 0x2000;
-	uint64_t *pml4 = (void *)(vm->mem + pml4_addr);
+	if (sev_mode != sev_recv)
+	{
+		uint64_t *pml4 = (void *)(vm->mem + pml4_addr);
 
-	uint64_t pdpt_addr = 0x3000;
-	uint64_t *pdpt = (void *)(vm->mem + pdpt_addr);
+		uint64_t pdpt_addr = 0x3000;
+		uint64_t *pdpt = (void *)(vm->mem + pdpt_addr);
 
-	uint64_t pd_addr = 0x4000;
-	uint64_t *pd = (void *)(vm->mem + pd_addr);
+		uint64_t pd_addr = 0x4000;
+		uint64_t *pd = (void *)(vm->mem + pd_addr);
 
-	pml4[0] = PDE64_PRESENT | PDE64_RW | PDE64_USER | pdpt_addr;
-	pdpt[0] = PDE64_PRESENT | PDE64_RW | PDE64_USER | pd_addr;
-	pd[0] = PDE64_PRESENT | PDE64_RW | PDE64_USER | PDE64_PS;
-	if (sev_mode != sev_disabled) {
-		pd[0] |= (1LU << host_cbitpos);
+		pml4[0] = PDE64_PRESENT | PDE64_RW | PDE64_USER | pdpt_addr;
+		if (sev_mode != sev_disabled)
+		{
+			pml4[0] |= (1LU << host_cbitpos);
+		}
+		pdpt[0] = PDE64_PRESENT | PDE64_RW | PDE64_USER | pd_addr;
+		if (sev_mode != sev_disabled)
+		{
+			pdpt[0] |= (1LU << host_cbitpos);
+		}
+		pd[0] = PDE64_PRESENT | PDE64_RW | PDE64_USER | PDE64_PS;
+		if (sev_mode != sev_disabled)
+		{
+			pd[0] |= (1LU << host_cbitpos);
+		}
 	}
 
 	sregs->cr3 = pml4_addr;
@@ -1276,11 +1293,13 @@ int run_long_mode(struct vm *vm, struct vcpu *vcpu)
 		perror("KVM_SET_REGS");
 		exit(1);
 	}
-
-	vm->image_size = guest64_end - guest64;
-	memcpy(vm->mem, guest64, vm->image_size);
-	memval = 0xFFFFFFFFFFFF;
-	memcpy(&vm->mem[0x400], &memval, 8);
+	if (sev_mode != sev_recv)
+	{
+		vm->image_size = guest64_end - guest64;
+		memcpy(vm->mem, guest64, vm->image_size);
+		memval = 0xFFFFFFFFFFFF;
+		memcpy(&vm->mem[0x400], &memval, 8);
+	}
 	return run_vm(vm, vcpu, 8);
 }
 
