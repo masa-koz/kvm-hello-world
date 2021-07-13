@@ -84,8 +84,44 @@ struct vm
 	FILE *fp;
 };
 
+uint32_t host_cbitpos;
+
 void vm_recv_start(struct vm *vm);
 void vm_recv(struct vm *vm);
+
+void host_cpuid(uint32_t function, uint32_t count,
+                uint32_t *eax, uint32_t *ebx, uint32_t *ecx, uint32_t *edx)
+{
+    uint32_t vec[4];
+
+#ifdef __x86_64__
+    asm volatile("cpuid"
+                 : "=a"(vec[0]), "=b"(vec[1]),
+                   "=c"(vec[2]), "=d"(vec[3])
+                 : "0"(function), "c"(count) : "cc");
+#elif defined(__i386__)
+    asm volatile("pusha \n\t"
+                 "cpuid \n\t"
+                 "mov %%eax, 0(%2) \n\t"
+                 "mov %%ebx, 4(%2) \n\t"
+                 "mov %%ecx, 8(%2) \n\t"
+                 "mov %%edx, 12(%2) \n\t"
+                 "popa"
+                 : : "a"(function), "c"(count), "S"(vec)
+                 : "memory", "cc");
+#else
+    abort();
+#endif
+
+    if (eax)
+        *eax = vec[0];
+    if (ebx)
+        *ebx = vec[1];
+    if (ecx)
+        *ecx = vec[2];
+    if (edx)
+        *edx = vec[3];
+}
 
 void vm_init(struct vm *vm, size_t mem_size)
 {
@@ -97,6 +133,11 @@ void vm_init(struct vm *vm, size_t mem_size)
 	struct sev_user_data_status status = {};
 	struct kvm_sev_launch_start start = {};
 	struct kvm_sev_guest_status guest_status = {};
+	uint32_t ebx = 0;
+
+	host_cpuid(0x8000001F, 0, NULL, &ebx, NULL, NULL);
+	host_cbitpos = ebx & 0x3f;
+	printf("host_cbitpos: %d\n", host_cbitpos);
 
 	if (sev_mode != sev_disabled)
 	{
@@ -1189,6 +1230,9 @@ static void setup_long_mode(struct vm *vm, struct kvm_sregs *sregs)
 	pml4[0] = PDE64_PRESENT | PDE64_RW | PDE64_USER | pdpt_addr;
 	pdpt[0] = PDE64_PRESENT | PDE64_RW | PDE64_USER | pd_addr;
 	pd[0] = PDE64_PRESENT | PDE64_RW | PDE64_USER | PDE64_PS;
+	if (sev_mode != sev_disabled) {
+		pd[0] |= (1LU << host_cbitpos);
+	}
 
 	sregs->cr3 = pml4_addr;
 	sregs->cr4 = CR4_PAE;
